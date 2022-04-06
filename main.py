@@ -20,8 +20,8 @@ class FSAInputParser:
         self.input_file = file
         self.states = None
         self.alpha = None
-        self.init = FSAInputParser.Container()
-        self.fin = FSAInputParser.Container()
+        self.initial = FSAInputParser.Container()
+        self.accepting = FSAInputParser.Container()
         self.trans = None
 
     def parse_input(self):
@@ -32,7 +32,7 @@ class FSAInputParser:
             for i in range(5):
                 line = in_file.readline()
                 if len(line) == 0:
-                    raise FSAValidator.FSAValidationError("E5: Input file is malformed ")
+                    raise FSAValidator.FSAValidationError("E0: Input file is malformed ")
                 self.execute_line(line)
 
     def execute_line(self, line: str):
@@ -54,15 +54,17 @@ class FSAInputParser:
                 elements = re.split(r',', elements)  # split arguments by comma
             statement = f'self.{identif}{str(elements)}'  # string representation of list looks like regular Python list
             exec(statement)  # assign variables
-        except AttributeError:
-            raise FSAValidator.FSAValidationError("E5: Input file is malformed")
+            if len(self.states) <= 0:
+                raise AttributeError()
+        except AttributeError as e:
+            raise FSAValidator.FSAValidationError("E0: Input file is malformed")
 
     def get_parameters(self):
         """ Return extracted parameters of FSA. """
         return (self.states,
                 self.alpha,
-                self.init,
-                self.fin,
+                self.initial,
+                self.accepting,
                 self.trans)
 
 
@@ -90,7 +92,7 @@ class FSARepresentation:
         """
         Parameters:
         params -- set of FSA characteristics, should be obtained using FSAInputParser """
-        self.states, self.alpha, self.init, self.fin, self.trans = params
+        self.states, self.alpha, self.initial, self.accepting, self.trans = params
         self.states_map = dict()
         self.transitions = []
 
@@ -126,19 +128,78 @@ class FSARepresentation:
         except KeyError as e:
             raise FSAValidator.FSAValidationError(f'E1: A state {str(e)} is not in the set of states')
 
+    def to_regexp(self) -> str:
+        """
+            Converts inner FSA representation to a regexp string using Kleene's algorithm.
+        :return:    regexp string
+        """
+        # auxiliary function for temporary regexp sets R^{k} storage
+        def empty_matrix(size: int, contents=""):
+            m = []
+            for i in range(size):
+                m.append([])
+                for j in range(size):
+                    m[i].append(contents)
+            return m
+        fsa = self
+        states_len = len(fsa.states)
+        R = empty_matrix(states_len)
+        k = -1
+        # fill for regexps with k = -1
+        for i in range(states_len):
+            for j in range(states_len):
+                flag = False #  flag to put empty set if no transitions are found
+                R_set = []
+                # if there exists a transition from q_i to q_j
+                if fsa.states[i] in fsa.states_map[fsa.states[j]].leads_here:
+                    flag = True
+                    for tr in fsa.transitions:
+                        if tr.prev_state == fsa.states[i] and tr.next_state == fsa.states[j]:
+                            R_set.append(tr.string)
+                if i == j:
+                    R_set.append("eps")
+                    flag = True
+                if not flag:
+                    R_set.append("{}")
+                regexp = R_set[0]
+                for r in range(1, len(R_set)):
+                    regexp += "|" + R_set[r] # append all found regexps as a union
+                R[i][j] = regexp
+
+        # next we will iteratively use R^k (R_next) and R^{k-1}  to obtain regexps
+        R_next = empty_matrix(states_len)
+        for it in range(states_len):
+            k += 1
+            for i in range(states_len):
+                for j in range(states_len):
+                    R_next[i][j] = "(" + R[i][k] + ")" + "(" + R[k][k] + ")*" + "(" + R[k][j] + ")" + "|" + "(" + R[i][j] + ")"
+            R = R_next
+            R_next = empty_matrix(states_len)
+
+        ans = ""
+        for i in range(states_len):
+            if fsa.states[i] in fsa.accepting:
+                ans += R[0][i] + "|"
+        if len(fsa.accepting) == 0:
+            ans = "{} "
+        return ans[0:-1]
+
 
 class FSAValidator:
     """ Provides main validation functionality for FSAs described using FSARepresentation. """
 
     def __init__(self):
         self.visited_map = dict()
-        input_parser = FSAInputParser("fsa.txt")
+        input_parser = FSAInputParser("input.txt")
         input_parser.parse_input()
 
         fsa_parameters = input_parser.get_parameters()
         self.fsa = FSARepresentation(fsa_parameters)
         self.fsa.fill_transitions()
         self.fsa.build_fsa_model()
+
+    def getFSA(self) -> FSARepresentation:
+        return self.fsa
 
     class FSAValidationError(Exception):
         """ Exception on validation errors. """
@@ -171,7 +232,7 @@ class FSAValidator:
             # assign flag
             leads_here_only_itself = len(leads_here_without_itself) == 0
 
-            is_initial_state = state.name in self.fsa.init.st
+            is_initial_state = state.name in self.fsa.initial
             transition_only_to_itself = True
             # Try to find other transitions
             for letter, state_name in state.transitions.items():
@@ -202,29 +263,9 @@ class FSAValidator:
         """
             Validates FSA for error E4: Initial state is not defined
         """
-        if len(self.fsa.init.st) == 0:
+        if len(self.fsa.initial) == 0:
             raise FSAValidator.FSAValidationError("E4: Initial state is not defined")
-        self.fsa.states_map[self.fsa.init.st[0]]
-
-    def validate_W1(self):
-        """
-            Validates FSA for warning W1: Accepting state is not defined
-        """
-        if len(self.fsa.fin.st) == 0:
-            raise FSAValidator.FSAValidationWarning("W1: Accepting state is not defined")
-
-    def validate_W2(self):
-        """
-            Validates FSA for warning W2: Some states are not reachable from the initial state
-        """
-        init_state = self.fsa.states_map[self.fsa.init.st[0]]
-        for state_name in self.fsa.states:
-            self.visited_map[state_name] = False
-        self.visit(init_state)
-        # check if all states have been marked
-        for state_name, visited in self.visited_map.items():
-            if not visited:
-                raise FSAValidator.FSAValidationWarning("W2: Some states are not reachable from the initial state")
+        self.fsa.states_map[self.fsa.initial[0]]
 
     def visit(self, state: FSARepresentation.State):
         """
@@ -236,13 +277,13 @@ class FSAValidator:
             if not self.visited_map[state_name]:
                 self.visit(self.fsa.states_map[state_name])
 
-    def validate_W3(self):
+    def validate_E5(self):
         """
-            Validates FSA for warning W3: FSA is nondeterministic
+            Validates FSA for error E5: FSA is nondeterministic
         """
         for name, state in self.fsa.states_map.items():
             if not state.deterministic:
-                raise FSAValidator.FSAValidationWarning("W3: FSA is nondeterministic")
+                raise FSAValidator.FSAValidationError("E5: FSA is nondeterministic")
 
     def is_complete(self) -> bool:
         """
@@ -284,41 +325,33 @@ class FSAValidator:
         return warning_print
 
     @staticmethod
-    def validate():
+    def run():
         """
-            Primary method for validating FSA and writing the report.
+            Primary method for validating FSA and converting it to regexp
         """
         error_print = True
-        with open("result.txt", "w") as f:
+        with open("output.txt", "w") as f:
             try:
                 try:
                     val = FSAValidator()
                     val.validate_E2()
                     val.validate_E3()
                     val.validate_E4()
-                    if val.is_complete():
-                        f.write("FSA is complete\n")
-                    else:
-                        f.write("FSA is incomplete\n")
+                    val.validate_E5()
+                    f.write(val.getFSA().to_regexp())
                 except KeyError as ex:
                     raise FSAValidator.FSAValidationError(f'E1: A state {str(ex)} is not in the set of states')
             except FSAValidator.FSAValidationError as e:
                 if error_print:
-                    error_print = False
                     f.write("Error:\n")
                 f.write(e.message)
                 f.write('\n')
                 return
-            warning_print = True
-            warning_print = FSAValidator.exception_wrapper(val.validate_W1, f, warning_print)
-            warning_print = FSAValidator.exception_wrapper(val.validate_W2, f, warning_print)
-            warning_print = FSAValidator.exception_wrapper(val.validate_W3, f, warning_print)
 
 
 def main():
     """ Boilerplate code """
-    FSAValidator.validate()
-
+    FSAValidator.run()
 
 if __name__ == '__main__':
     sys.exit(main())
