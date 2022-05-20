@@ -1,10 +1,6 @@
-""" TCS Assignment 1. A FSA validator """
+"""FSA to RegExp translator"""
 import sys
 import re
-
-__author__ = "Artem Bulgakov, BS21-08"
-__email__ = "ar.bulgakov@innopolis.university"
-
 
 class FSAInputParser:
     """ A class for parsing inputs from file to further processing.
